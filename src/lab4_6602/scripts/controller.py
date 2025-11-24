@@ -55,9 +55,9 @@ class ControllerNode(Node):
         # ============================
         self.robot = rtb.DHRobot(
             [
-                rtb.RevoluteMDH(alpha=0.0,   a=0.0,  d=0.2),
-                rtb.RevoluteMDH(alpha=pi/2,  a=0.0,  d=0.02),
-                rtb.RevoluteMDH(alpha=0.0,   a=0.25, d=0.0),
+                rtb.RevoluteMDH(alpha=0.0,   a=0.0,  d=0.2,   qlim=[-pi, pi]),   # ← ADD
+                rtb.RevoluteMDH(alpha=pi/2,  a=0.0,  d=0.02,  qlim=[-pi, pi]),   # ← ADD
+                rtb.RevoluteMDH(alpha=0.0,   a=0.25, d=0.0,   qlim=[-pi, pi]),   # ← ADD
             ],
             tool=SE3.Tx(0.28),
             name="3UR Robot"
@@ -72,7 +72,7 @@ class ControllerNode(Node):
         # State variables
         # ============================
         # Start at a non-singular pose (avoid q = [0,0,0])
-        self.q = np.array([0.0, -0.5, 0.5], dtype=float)
+        self.q = np.array([0.0, 0.0, 0.0], dtype=float)
         self.kp = 1.0
 
         self.random_target = None    # for AUTO mode (from random_pos / state)
@@ -83,6 +83,7 @@ class ControllerNode(Node):
         self.tele_x = 0.0
         self.tele_y = 0.0
         self.tele_z = 0.0
+        self.last_cmd_vel_time = self.get_clock().now()
 
         # TF for EE pose in world frame
         self.tf_buffer = Buffer()
@@ -143,28 +144,67 @@ class ControllerNode(Node):
     # ==========================================================
     # FULL IK SOLVER (for IK mode)
     # ==========================================================
+    # def compute_inverse_kinematics(self, pos):
+    #     x, y, z = pos
+
+    #     # Workspace reachability check
+    #     distance_sq = x**2 + y**2 + (z - self.base_height) ** 2
+    #     if not (self.r_min**2 <= distance_sq <= self.r_max**2):
+    #         self.get_logger().error("[IK] Target out of workspace")
+    #         return None
+
+    #     # Build SE3 target
+    #     T = SE3(x, y, z)
+
+    #     # Solve IK using Levenberg–Marquardt (position only)
+    #     sol = self.robot.ikine_LM(
+    #         T,
+    #         mask=[1, 1, 1, 0, 0, 0],
+    #         joint_limits=True,
+    #         q0=self.q,   # start from current configuration
+    #     )
+
+    #     if not sol.success:
+    #         self.get_logger().error("[IK] ikine_LM failed")
+    #         return None
+
+    #     self.get_logger().info(f"[IK] ikine_LM solution: {sol.q}")
+    #     return sol.q
+
     def compute_inverse_kinematics(self, pos):
         x, y, z = pos
 
         # Workspace reachability check
         distance_sq = x**2 + y**2 + (z - self.base_height) ** 2
+        distance = np.sqrt(distance_sq)
+
+        self.get_logger().info(
+            f"[IK] Distance check: {distance:.3f}m (valid: {self.r_min:.3f} to {self.r_max:.3f})"
+        )
+
         if not (self.r_min**2 <= distance_sq <= self.r_max**2):
-            self.get_logger().error("[IK] Target out of workspace")
+            self.get_logger().error(
+                f"[IK] Target out of workspace! Distance: {distance:.3f}m"
+            )
             return None
 
         # Build SE3 target
         T = SE3(x, y, z)
 
-        # Solve IK using Levenberg–Marquardt (position only)
+        # Use a safe default starting config instead of current position
+        q0 = np.array([0.0, -0.5, 0.5])  # ← Always use this safe config
+
+        self.get_logger().info(f"[IK] Solving IK from q0 = {q0}")
+
         sol = self.robot.ikine_LM(
             T,
             mask=[1, 1, 1, 0, 0, 0],
-            joint_limits=False,
-            q0=self.q,   # start from current configuration
+            joint_limits=True,
+            q0=q0,  # ← Fixed starting point
         )
 
         if not sol.success:
-            self.get_logger().error("[IK] ikine_LM failed")
+            self.get_logger().error("[IK] ikine_LM failed to converge")
             return None
 
         self.get_logger().info(f"[IK] ikine_LM solution: {sol.q}")
@@ -189,6 +229,7 @@ class ControllerNode(Node):
         self.tele_x = msg.linear.x
         self.tele_y = msg.linear.y
         self.tele_z = msg.linear.z
+        self.last_cmd_vel_time = self.get_clock().now()
 
     # ==========================================================
     # TF helper: get current EE position + orientation
@@ -229,26 +270,45 @@ class ControllerNode(Node):
     # Teleoperation (velocity control) with singularity protection
     # ==========================================================
     def control_vel(self, mode):
+    # ---- AUTO STOP after 0.1s with no new cmd_vel ----
+        now = self.get_clock().now()
+        dt = (now - self.last_cmd_vel_time).nanoseconds * 1e-9
+
+        if dt > 0.1:
+            # No input → force stop
+            self.tele_x = 0.0
+            self.tele_y = 0.0
+            self.tele_z = 0.0
+
+        # If the command is zero, do nothing (stop)
+        if abs(self.tele_x) < 1e-6 and abs(self.tele_y) < 1e-6 and abs(self.tele_z) < 1e-6:
+            return
+
+        # ---- Get current transform ----
         pos, Rm = self.get_transform()
         if pos is None:
             return
 
+        # ---- Compute task-space velocity ----
         v = np.array([self.tele_x, self.tele_y, self.tele_z], dtype=float)
         p_dot = v if mode == "TELEOP_G" else Rm @ v
 
+        # ---- Jacobian inverse kinematics ----
         J = self.robot.jacob0(self.q)[0:3, :]
 
-        # Singularity check via SVD
+        # Singularity protection
         _, s, _ = np.linalg.svd(J)
-        if s[-1] < 1e-3:
+        if s[-1] < 1e-5:
             self.get_logger().warning(
-                f"[TELEOP] Singular Jacobian σ_min={s[-1]:.4f}. Teleop stopped."
+                f"[TELEOP] Near singularity σ_min={s[-1]:.4e}. Stop."
             )
             return
 
         q_dot = np.linalg.pinv(J) @ p_dot
         self.q = self.q + q_dot * self.dt
+
         self.publish_joint_angle(self.q)
+
 
     # ==========================================================
     # Position control (AUTO / IK tracking)
