@@ -1,0 +1,6 @@
+# Request
+std_msgs/String mode
+---
+# Response
+geometry_msgs/Point position
+bool inprogress
