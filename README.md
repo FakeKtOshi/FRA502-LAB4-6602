@@ -4,7 +4,7 @@ Krit Leetrakul 6602 (Oshi)
 # 🚀 Lab4-6602 Robot Controller (ROS2 Humble)
 A complete ROS2 control system for a 3-DoF robot arm including AUTO random motion, IK tracking, TELEOP velocity control, and RViz visualization.
 
-# 📂 Project Tree
+# Project Tree
 ```
 lab4_wspace/
 └── src/
@@ -25,7 +25,7 @@ lab4_wspace/
         └── lab4_6602/dummy_module.py
 ```
 
-# 🛠 Install
+# Install
 ```
 cd ~/lab4_wspace/src
 git clone https://github.com/<your_repo>/lab4_6602.git
@@ -35,7 +35,7 @@ colcon build --symlink-install
 source install/setup.bash
 ```
 
-# ▶️ Run System
+# Run System
 # Terminal 1
 ```
 ros2 launch lab4_6602 launch.py
@@ -47,13 +47,28 @@ ros2 run lab4_6602 keyboard.py
 ```
 
 # Keyboard Commands
-a = AUTO
+```
+A : AUTO mode
+I : IK mode → enter X Y Z
+F : TELEOP_F (Frame velocity)
+G : TELEOP_G (Global velocity)
 
-i = IK
+U : +X
+J : -X
+H : +Y
+K : -Y
+O : +Z
+L : -Z
 
-t = TELEOP
+SPACE : STOP
+X : EXIT
+```
 
-f = TELEOP_F (world frame)
-
-g = TELEOP_G (gripper frame)
-
+# Setup RVIz Enviroment
+```
+- Add RobotModel & TF via By display type
+- Click on RobotModel and selected Description Topic to view a model with "/robot_description"
+- Then selected "map" from Fixed frame in Global Options, to link_0
+```
+# Preview of RVIz 
+<img width="1197" height="755" alt="image" src="https://github.com/user-attachments/assets/35baa750-0202-4035-8960-232be2469c36" />
